@@ -1,0 +1,7 @@
+yaac (yet another anki clone):
+CLI tool for studying flashcards with a SM-2 based spaced repition algorithm.
+
+todo:
+1. Finish serial/deserialisation for saving
+2. cli for usage
+
