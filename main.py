@@ -1,110 +1,200 @@
+import argparse
+import os
 import json
-from ulid import ulid
-from card import Card
-from deck import Deck
-class Collection:
-    ulid: str
-    label: str
-    saturation: int = 10
-    decks: dict[str, Deck] = {}
-    cards: dict[str, Card] = {}
+from collection import Collection
+from tag import TagType
 
-    def __init__(self, label: str):
-        self.ulid = ulid()
-        if len(label) >= 3:
-            self.label = label
+ROOT = ".yaac"
+ACTIVE_FILE = os.path.join(ROOT, "HEAD")
+MANIFEST_FILE = os.path.join(ROOT, "MANIFEST")
+
+
+def get_active_collection_path():
+    if not os.path.exists(ACTIVE_FILE):
+        print("No active collection. Use 'yaac use <label>' to activate one.")
+        exit(1)
+    with open(ACTIVE_FILE, "r") as f:
+        return f.read().strip()
+
+
+def load_active_collection():
+    path = get_active_collection_path()
+    ulid = os.path.basename(path).split(".")[0]
+    col = Collection("temp")
+    col.ulid = ulid
+    col.read()
+    return col
+
+def get_partition_path(ulid):
+    return os.path.join(ROOT, ulid[:2], ulid[2:4], f"{ulid}.json")
+
+def find_collection_by_label(label):
+    with open(MANIFEST_FILE, "r") as mf:
+        for line in mf:
+            col_label, col_ulid = line.strip().split("=")
+            if col_label == label or col_ulid == label:
+                collection_path = get_partition_path(col_ulid)
+                if os.path.exists(collection_path):
+                    with open(collection_path, "r") as j:
+                        data = json.load(j)
+                        return data, collection_path
+    return None, None
+
+def cmd_init(args):
+    if os.path.exists(ROOT):
+        print(f"{ROOT} already exists. No need to initialize.")
+        return
+
+    os.makedirs(ROOT)
+
+    with open(ACTIVE_FILE, "w") as f:
+        f.write("")
+
+    with open(MANIFEST_FILE, "w") as f:
+        f.write("")
+    print(f"Initialized {ROOT} directory with {ACTIVE_FILE} and {MANIFEST_FILE}.")
+
+
+def cmd_collection(args):
+    if args.action == "add":
+        col = Collection(args.label)
+        col.write()
+        with open(MANIFEST_FILE, "a") as mf:
+            mf.write(f"{col.label}={col.ulid}\n")
+        print(f"Collection created: {col.label} ({col.ulid})")
+
+    elif args.action == "list":
+        with open(MANIFEST_FILE, "r") as mf:
+            for line in mf:
+                col_label, col_ulid = line.strip().split("=")
+                print(f"{col_ulid}\t{col_label}")
+
+    elif args.action == "rm":
+        collection_found = False
+        with open(MANIFEST_FILE, "r") as mf:
+            lines = mf.readlines()
+        with open(MANIFEST_FILE, "w") as mf:
+            for line in lines:
+                col_label, col_ulid = line.strip().split("=")
+                if col_label == args.label:
+                    collection_found = True
+                    collection_file = get_partition_path(col_ulid)
+                    confirm = input(
+                        f"Confirm delete of {args.label} ({col_ulid}) (y/N): "
+                    )
+                    if confirm.lower() == "y":
+                        if os.path.exists(collection_file):
+                            os.remove(collection_file)
+                            print(f"Deleted collection file: {collection_file}")
+                        else:
+                            print(f"Collection file {collection_file} not found.")
+                    continue
+                mf.write(line)
+
+        if not collection_found:
+            print(f"Collection {args.label} not found.")
         else:
-            raise ValueError("Label too short (must be 3 or more characters).")
+            print("Collection deleted successfully.")
 
-    def __repr__(self):
-        buffer = "%s\t%s\n" % (self.ulid, self.label)
-        buffer += str(list(self.decks.keys()))+"\n"
-        for card in self.cards.values():
-            buffer += card.__repr__() + "\n"
-        return buffer
+    elif args.action == "show":
+        data, _ = find_collection_by_label(args.label)
+        if data:
+            print(json.dumps(data, indent=2))
+        else:
+            print("Collection not found.")
 
-    def write(self):
-        serial = {}
-        serial["ulid"] = self.ulid
-        serial["label"] = self.label
-        serial["saturation"] = self.saturation
-        if len(self.decks) > 0:
-            serial["decks"] = [{deck.ulid: deck.__dict__} for deck in self.decks.values()]
-        if len(self.cards) > 0:
-            serial["cards"] = [{card.ulid: card.__dict__} for card in self.cards.values()]
-        with open("yaac.json", "w") as f:
-            #f.write(json.dumps(serial))
-            f.write(json.dumps(self.__dict__))
+def cmd_card(args):
+    pass
 
-    def read(self):
-        with open("yaac.json", "r") as f:
-            collection = json.load(f)
-        self.ulid = collection["ulid"]
-        self.label = collection["label"]
-        self.saturation = collection["saturation"]
-        self.decks = collection["decks"]
-        self.cards = collection["cards"]
-    
-    def create_deck(self, label: str) -> str:
-        d = Deck(label)
-        self.decks[d.ulid] = d
-        return d.ulid
-
-    def create_card(self, q: str, a: str) -> str:
-        c = Card(q, a)
-        self.cards[c.ulid] = c
-        return c.ulid
-
-    def add_card_to_deck(self, card_ulid: str, deck_ulid: str):
-        card: Card = self.cards[card_ulid]
-        card.add(deck_ulid)
-
-    def cycle(self, queue: list):
-        for i, (_, card) in enumerate(queue):
-            if i == self.saturation:
-                break
-            print(card.question)
-            space = input("Show answer? (y/n): ")
-            if space == "y":
-                print(card.answer)
-            quality = input("How well did you recover the information? Answer 0-5: ")
-            if int(quality) not in {0, 1, 2, 3, 4, 5}:
-                raise ValueError("Quality not integer between 0 and 5")
-        card.cycle(int(quality))
+def cmd_use(args):
+    data, full = find_collection_by_label(args.label)
+    if full:
+        with open(ACTIVE_FILE, "w") as af:
+            af.write(full)
+        print(f"Now using collection: {data['label']}")
+    else:
+        print("Collection not found.")
 
 
-    def build(self, ulid: str) -> set[Card]:
-        deck: Deck = self.decks[ulid]
-        if deck is None:
-            raise KeyError
-        order = []
-        for card in self.cards.values():
-            if card.deck_ulid == deck.ulid:
-                order.append((card.queue.value, card))
-        return sorted(order, key=lambda c: c[0])
-    
+def cmd_which(args):
+    path = get_active_collection_path()
+    with open(path, "r") as f:
+        data = json.load(f)
+        print(f"Active collection: {data['label']} ({data['ulid']})")
 
 
-            
+def main():
+    parser = argparse.ArgumentParser(
+        prog="yaac",
+        description="Yet Another Anki Clone",
+        epilog="""
+        Commands:
+        init                         Create the .yaac environment
+        collection add <label>       Add a new collection
+        collection list              List all collections
+        collection show <label|ulid> Show details of a collection
+        collection rm <label|ulid>   Remove a collection
+
+        use <label>                  Set the active collection
+        which                        Show the active collection
+
+        card add <front> <back>     Add a flashcard
+        card list                   List all flashcards
+        card show <label|ulid>      Show details of a card
+        card assign <label|ulid>    Assign card to a deck
+        card rm <label|ulid>        Remove a card
+
+        tag add <name> [type]       Add a tag with optional type (default: Generic)
+        tag list                    List all tags
+        tag show <label|ulid>       Show details of a tab
+        tag assign <label|ulid>     Assign tag to a card
+        tag rm <label|ulid>        Remove a tag
+
+        deck add <name>             Add a new deck
+        deck list                   List all decks
+        deck show <label|ulid>            Show deck details
+        deck rm <label|ulid>              Remove a deck
+
+        review start                Start a review session
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    subparsers = parser.add_subparsers(dest="command")
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Initialize the .yaac environment",
+        description="Create the .yaac directory along with HEAD and MANIFEST files",
+    )
+    init_parser.set_defaults(func=cmd_init)
+
+    # collection
+    collection_parser = subparsers.add_parser("collection")
+    collection_parser.add_argument("action", choices=["add", "list", "show", "rm"])
+    collection_parser.add_argument(
+        "label", nargs="?", help="Label of the collection (required for add, show, rm)"
+    )
+    collection_parser.set_defaults(func=cmd_collection)
+
+    # use
+    use_parser = subparsers.add_parser("use")
+    use_parser.add_argument("label")
+    use_parser.set_defaults(func=cmd_use)
+
+    # which
+    which_parser = subparsers.add_parser("which")
+    which_parser.set_defaults(func=cmd_which)
+
+    # card
+    card_parser = subparsers.add_parser("card")
+    card_parser.set_defaults(func=cmd_card)
+
+    args = parser.parse_args()
+    if hasattr(args, "func"):
+        args.func(args)
+    else:
+        parser.print_help()
+
+
 if __name__ == "__main__":
-    collection = Collection("Mathematics")
-    # deck_ulid = collection.create_deck("Logic")
-    # card_ulid = collection.create_card("What is a deductive arguement", "One where if the premise(s) are assumed to be true, the conclusion is impossible to be false.")
-    # card_ulid_2 = collection.create_card("What is a inductive arguement", "One where if the premise(s) are assumed to be true, the conclusion is probably true.")
-    # collection.add_card_to_deck(card_ulid, deck_ulid)
-    # collection.add_card_to_deck(card_ulid_2, deck_ulid)
-
-    # queue = collection.build(deck_ulid)
-    # collection.cycle(queue)
-
-    collection.read()
-    collection.write()
-
-    print(collection.__dict__)
-
-
-
-
-
-
-            
+    main()

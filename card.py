@@ -1,5 +1,7 @@
 from ulid import ulid
 from enum import Enum
+from datetime import datetime, timedelta
+
 
 class Queue(int, Enum):
     New = 0
@@ -9,33 +11,65 @@ class Queue(int, Enum):
     Lapsed = 4
     Archived = -1
 
+
 class Card:
     ulid: str
     deck_ulid: str
     question: str
     answer: str
-    queue: Queue = Queue.New
+    created_at: str = datetime.now().isoformat()
+    reviewed_at: str = datetime.now().isoformat()
+    queue: Queue
     rep: int = 0
     interval: int = 1
     ease: float = 2.5
 
-    def __init__(self, q: str, a: str):
+    def __init__(self, question: str, answer: str):
         self.ulid = ulid()
-        self.question = q
-        self.answer = a
+        self.queue = Queue.New
+        self.question = question
+        self.answer = answer
 
     def __repr__(self):
-        buffer = ""
-        if self.question:
-            buffer += " Question: %s" % self.question
-        else:
-            buffer += self.ulid
+        qstate = f"[{self.queue.name}]"
+        buffer = f"{qstate} {self.question}" if self.question else self.ulid
         return buffer
+        
+    def is_due(self) -> bool:
+        return datetime.now() >= datetime.fromisoformat(self.reviewed_at) + timedelta(days=self.interval)
+
+    def to_dict(self):
+        return {
+            "ulid": self.ulid,
+            "deck_ulid": self.deck_ulid,
+            "created_at": self.created_at,
+            "reviewed_at": self.reviewed_at,
+            "question": self.question,
+            "answer": self.answer,
+            "queue": self.queue.value,
+            "rep": self.rep,
+            "interval": self.interval,
+            "ease": self.ease,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        card = cls(data["question"], data["answer"])
+        card.ulid = data["ulid"]
+        card.deck_ulid = data.get("deck_ulid")
+        card.created_at = data["created_at"]
+        card.reviewed_at = data["reviewed_at"]
+        card.queue = Queue(data["queue"])
+        card.rep = data["rep"]
+        card.interval = data["interval"]
+        card.ease = data["ease"]
+        return card
 
     def add(self, deck_ulid: str):
         self.deck_ulid = deck_ulid
 
     def cycle(self, quality: int):
+        self.reviewed_at = datetime.now().isoformat()
         if quality < 3:
             self.rep = 0
             self.interval = 1
@@ -64,4 +98,3 @@ class Card:
                 self.queue = Queue.ReviewLow
         if self.interval > 10:
             self.queue = Queue.Lapsed
-        
